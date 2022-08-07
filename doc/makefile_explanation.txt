@@ -1,0 +1,112 @@
+============================================
+Plan
+============================================
+
+We want a project structured like the following:
+-.vscode
+-bin
+-build
+-code
+    -src
+-doc
+-obj
+    -code
+        -src...
+    -tests
+        -src...
+-tests
+
+We will store VS Code settings in .\.vscode\.
+We will store executables in .\bin\.
+We will store build scripts in .\build\ (more explanation why we need those later).
+We will store documentation (such as this file) in .\doc\.
+
+============================================
+Base Case
+============================================
+
+The basic case is having one file in .\code\ (or .\tests\) that we want to compile. Let's make a hello world file at .\code\src\main.cpp. Repeat for .\tests\.
+
+To compile this in command line, we simply have to type clang++ .\code\src\main.cpp -o .\bin\code. 
+When we declare header files (.hpp by convention) that we use in some file that we are compiling (such as main.cpp), we need to include the symbols in that header file in some source (.cpp) file
+    - Doesn't have to be a .cpp file but this is standard convention, stick to it!
+We then include that .cpp file in the list of files that we compile.
+clang++ .\code\src\main.cpp .\code\src\lib\printer.cpp -o .\bin\code.
+
+I tried getting .tpp files to create an object file but clang++ wouldn't cooperate. 
+I changed the .tpp file extension to .cpp and I can now get an object file, although it outputs the object file in the root directory instead of the specified .\obj\code\src\lib.
+    I forgot the -o tag!
+
+Another problem: I tried splitting up the hpp and cpp files into include and src but couldn't get clang++ to find the include folder from the src folder, so I gave up and recombined the two.
+
+Final workflow:
+clang++ .\code\src\main.cpp -c -o .\obj\code\src\lib\main.o -I .\code\ (main.cpp has #include "lib/example_template.cpp")
+clang++ .\code\src\lib\example_template.cpp -c -o .\obj\code\src\lib\example_template.o (can include -I .\code\ to be uniform with the above call)
+clang++ .\obj\code\src\main.o .\obj\code\src\lib\example_template.o -o .\bin\main -I .\code\
+
+============================================
+Makefiles
+============================================
+
+This gets quite tedious to write out manually each time, especially when we start to include more files, so we leverage Makefiles instead. We will store those in .\build\ to avoid clutter.
+
+We create a Makefile titled Makefile.code.windows.mak to show that the Makefile will run for the code subdirectory in Windows. 
+We then add a task to .\.vscode\tasks.json with a command "make -f .\\build\\Makefile.code.windows.mak build". "build" is referred to as a target, aka a label that we run code from.
+Targets are useful because they give us multiple recipes that we can add into a single script, such as setup and cleanup. We add the following code:
+build: .\code\src\main.cpp
+	clang++ .\code\src\main.cpp -o .\bin\code
+
+We add a declaration for the target build and pass an argument: the name of the file we want to compile. 
+We don't need to pass this for a hardcoded file, but we will need this parameter when we want to add all files with a given extension to be compiled.
+
+Problem: If we run more than once, we get "make: 'build' is up to date," meaning we can't run more than once without making changes. Solution: add a .PHONY: build above the build recipe.
+
+============================================
+Scaffolding our script
+============================================
+
+We now have a Makefile that can build one hard-coded C file. We will want to eventually build on a dynamic number of files (i.e. all cpp files in a source directory).
+
+We will have to recompile all of our code whenever we make any changes to any of the files involved in compiling. Build times quickly degrade as a result.
+To work around this, we use object files. We compile code into intermediate .o (object) files as follows: clang++ -c .\code\src\main.cpp -o .\obj\code\src\main.o
+And then we take this .o file and turn it into an exe: clang++ .\obj\code\src\main.o -o .\bin\code.
+
+We thus want to split the build process into a compile step (creating .o files) and a build step (creating the executable). 
+We also need to ensure that the correct subfolders exist in our \.obj\ directory (i.e. we need a directory-creating step) and we also want a way to clean/remove all objects/executables.
+Thus, our Makefile has two components: build (scaffold, compile, link) and clean.
+
+============================================
+Makefile on multiple sources
+============================================
+
+To run our Makefile on multiple cpp sources, we'll have to learn how to pull multiple cpp files from a source directory. First, we set up a testing recipe to test printing outputs for later.
+This step isn't necessary, but it preserves our existing code while we test new code.
+
+Running make -f .\build\Makefile.code.windows.mak test prints out the result of the test label, which in my case was "Hello world!"
+Next goal: generate list of folders for scaffolding purposes
+
+For Windows, we can get the list of subdirs from SRC as follows: $(subst $(CURRENT_DIR),,$(shell dir $(SRC) /S /AD /B | findstr /i src))
+Where CURRENT_DIR := $(subst /,\,${CURDIR}) and SRC := code 
+
+To make these directories within the .\obj\ directory, we use addprefix: $(addprefix $(OBJ), $(SRC_SUBDIRS)) - this adds $(OBJ), which is .\obj\, in front of every SRC_SUBDIR
+All in all, we use the following command to scaffold our .\obj\ subdirectory: -@setlocal enableextensions enabledelayedexpansion && mkdir $(addprefix $(OBJ), $(SRC_SUBDIRS)) 2>NUL || cd .
+
+Next, we want to get the list of cpp files that we will compile:
+
+rwildcard=$(wildcard $1$2) $(foreach d,$(wildcard $1*),$(call rwildcard,$d/,$2))
+SRC_FILES 		:= $(call rwildcard,$(SRC)/,*.$(SRC_EXTENSION)) # Get all .cpp files
+
+Make does not offer a recursive wildcard search, so we made our own, called rwildcard. We use rwildcard to get the list of cpp files (denoted by SRC_EXTENSION) and save to SRC_FILES
+
+OBJ_FILES		:= $(SRC_FILES:%=$(OBJ)/%.o)
+
+We set OBJ_FILES equal to our SRC_FILES, except we add a .o to the end of the filename. We will use these next with a pattern rule to make .cpp.o files from .cpp via compiling with -c:
+
+$(OBJ)/%.$(SRC_EXTENSION).o: %.$(SRC_EXTENSION) # compile .cpp to .cpp.o object
+	@echo   $<...
+	@clang $< $(COMPILER_FLAGS) -c -o $@ $(INCLUDE_FLAGS)
+
+In above, $< refers to the .cpp file we compile, we spit out a .cpp.o file marked by $@.
+
+Let's say we want to build code in .\tests\ that uses printing/printer.hpp in .\code\src\. 
+We use the same include flag of -I code but now must be more explicit about the filepath we pass, typing #include "src/printing/printer.hpp" The rest of the makefile is the same.
