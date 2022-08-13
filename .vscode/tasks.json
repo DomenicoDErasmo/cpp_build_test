@@ -47,7 +47,7 @@
             "type": "shell",
             "label": "Clean Tests",
             "windows": {
-                "command": "make -f .\\build\\Makefile.code.windows.mak clean"
+                "command": "make -f .\\build\\Makefile.tests.windows.mak clean"
             },
             "options": {
                 "cwd": "${workspaceFolder}/"
